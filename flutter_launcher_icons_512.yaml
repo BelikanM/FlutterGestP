@@ -1,0 +1,41 @@
+flutter_launcher_icons:
+  android: true
+  ios: true
+  
+  # Logo source - Utilise ton logo 512x512 avec marges
+  image_path: "logo_512.png"
+  
+  # Configuration Android avec icône adaptative
+  # Le logo sera sur fond blanc pour éviter les coupures
+  adaptive_icon_background: "#FFFFFF"
+  adaptive_icon_foreground: "logo_512.png"
+  
+  # Pour Android 8+ avec icônes adaptatives
+  min_sdk_android: 21
+  
+  # Configuration iOS
+  remove_alpha_ios: true
+  
+  # Configuration Web avec PWA
+  web:
+    generate: true
+    image_path: "logo_512.png"
+    background_color: "#FFFFFF"
+    theme_color: "#7CB342"
+  
+  # Configuration Windows
+  windows:
+    generate: true
+    image_path: "logo_512.png"
+    icon_size: 256
+  
+  # Configuration macOS
+  macos:
+    generate: true
+    image_path: "logo_512.png"
+
+# INSTRUCTIONS:
+# 1. Place ton logo "logo_512.png" (512x512 pixels avec marges blanches) à la racine du projet
+# 2. Le logo doit avoir au moins 20% de marge blanche de chaque côté pour ne pas être coupé
+# 3. Lance: flutter pub run flutter_launcher_icons
+# 4. Toutes les icônes seront générées automatiquement !

@@ -1,0 +1,120 @@
+# =====================================
+# ⚙️ FLUTTER / DART
+# =====================================
+**/doc/api/
+**/ios/Flutter/.last_build_id
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+build/
+coverage/
+
+# Symbolication & obfuscation
+app.*.symbols
+app.*.map.json
+
+# Android Studio builds
+/android/app/debug
+/android/app/profile
+/android/app/release
+
+# =====================================
+# 🧠 BACKEND NODE.JS
+# =====================================
+backend/node_modules/
+backend/package-lock.json
+backend/yarn.lock
+backend/pnpm-lock.yaml
+backend/logs/
+backend/tmp/
+backend/dist/
+backend/uploads/
+backend/.cache/
+backend/.tmp/
+backend/.vercel/
+backend/.pm2/
+backend/debug.log
+backend/npm-debug.log*
+backend/yarn-error.log*
+backend/.env
+backend/.env.local
+backend/.env.development
+backend/.env.production
+backend/.env.test
+
+# =====================================
+# 📦 ENVIRONNEMENT GLOBAL
+# =====================================
+.env
+.env.local
+.env.development
+.env.production
+.env.test
+
+# =====================================
+# 💻 IDE & OUTILS
+# =====================================
+# IntelliJ / Android Studio
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# VSCode (tu peux décommenter si tu veux tout ignorer)
+#.vscode/
+
+# Atom / autres éditeurs
+.atom/
+.history/
+
+# =====================================
+# 🖥️ SYSTÈME & TEMPORAIRES
+# =====================================
+*.log
+*.tmp
+*.bak
+*.swp
+*.swo
+*.class
+*.pyc
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+*~
+migrate_working_dir/
+
+# =====================================
+# 🧪 TESTS & GÉNÉRATION TEMPORAIRE
+# =====================================
+test/coverage/
+backend/coverage/
+
+# =====================================
+# 🧰 SCRIPTS & FICHIERS LOCAUX
+# =====================================
+*.ps1
+*.bat
+*.sh
+tools/local_*.*
+add_padding_logo.ps1
+
+# =====================================
+# 🖼️ IMAGES TEMPORAIRES & LOGOS
+# =====================================
+*_padded.png
+*_resized.png
+logo_*.png
+LOGO VECTORISE PNG.png
+WhatsApp Image *.jpg
+
+# =====================================
+# 🧠 SWIFTPM / DIVERS
+# =====================================
+.build/
+.buildlog/
+.svn/
+.swiftpm/
