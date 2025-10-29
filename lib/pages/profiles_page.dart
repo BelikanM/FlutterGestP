@@ -14,26 +14,74 @@ import 'blog_list_page.dart';
 import 'blog_editor_page.dart';
 import 'media_library_page.dart';
 import 'admin_users_page.dart'; // Page de gestion des utilisateurs
+
+// ========================================
+// ÉTAT DU PROFIL (inspiré du ChatState)
+// ========================================
+
+class ProfileState {
+  final Map<String, dynamic>? userData;
+  final List<dynamic> employees;
+  final bool isLoading;
+  final bool hasError;
+  final String? errorMessage;
+  final bool isUpdating;
+  final bool isLoadingEmployees;
+  final bool isAdmin;
+
+  ProfileState({
+    this.userData,
+    this.employees = const [],
+    this.isLoading = false,
+    this.hasError = false,
+    this.errorMessage,
+    this.isUpdating = false,
+    this.isLoadingEmployees = false,
+    this.isAdmin = false,
+  });
+
+  ProfileState copyWith({
+    Map<String, dynamic>? userData,
+    List<dynamic>? employees,
+    bool? isLoading,
+    bool? hasError,
+    String? errorMessage,
+    bool? isUpdating,
+    bool? isLoadingEmployees,
+    bool? isAdmin,
+  }) {
+    return ProfileState(
+      userData: userData ?? this.userData,
+      employees: employees ?? this.employees,
+      isLoading: isLoading ?? this.isLoading,
+      hasError: hasError ?? this.hasError,
+      errorMessage: errorMessage ?? this.errorMessage,
+      isUpdating: isUpdating ?? this.isUpdating,
+      isLoadingEmployees: isLoadingEmployees ?? this.isLoadingEmployees,
+      isAdmin: isAdmin ?? this.isAdmin,
+    );
+  }
+}
+
 class ProfilesPage extends StatefulWidget {
   const ProfilesPage({super.key});
   @override
   ProfilesPageState createState() => ProfilesPageState();
 }
+
 class ProfilesPageState extends State<ProfilesPage> with AutomaticKeepAliveClientMixin {
   final ProfileService _profileService = ProfileService();
   final TextEditingController _nameController = TextEditingController();
   final TextEditingController _currentPasswordController = TextEditingController();
   final TextEditingController _newPasswordController = TextEditingController();
   final TextEditingController _confirmPasswordController = TextEditingController();
-  Map<String, dynamic>? _userData;
-  bool _isLoading = true;
-  String? _error;
+
+  // État unifié du profil (comme ChatState)
+  ProfileState _profileState = ProfileState();
+
   String? _token;
-  bool _isUpdating = false;
   File? _selectedImage; // Pour stocker l'image sélectionnée
   
-  @override
-  bool get wantKeepAlive => true;
   // Nouvelle section Employé
   final TextEditingController _employeeNameController = TextEditingController();
   final TextEditingController _employeePositionController = TextEditingController();
@@ -44,8 +92,6 @@ class ProfilesPageState extends State<ProfilesPage> with AutomaticKeepAliveClien
   DateTime? _endDate;
   bool _isCreatingEmployee = false;
   Map<String, dynamic>? _createdEmployee;
-  List<dynamic> _employees = [];
-  bool _isLoadingEmployees = false;
   int _hoveredIndex = -1;
   Map<String, dynamic>? _selectedEmployee;
   File? _editPhoto;
@@ -56,13 +102,21 @@ class ProfilesPageState extends State<ProfilesPage> with AutomaticKeepAliveClien
   bool _isAutoRefreshing = false;
   
   // Variables pour l'administration
-  bool _isAdmin = false;
+
+  // Cache pour éviter les appels répétés à l'API user
+  Map<String, dynamic>? _cachedUserData;
+  DateTime? _lastUserFetch;
+  static const Duration _userCacheDuration = Duration(minutes: 15); // Cache de 15 minutes
+
+  @override
+  bool get wantKeepAlive => true;
 
   @override
   void initState() {
     super.initState();
     _loadTokenAndFetchUser();
-    _startAutoRefresh();
+    // Retirer le démarrage automatique du timer pour éviter les conflits
+    // _startAutoRefresh(); // Commenté pour éviter les problèmes de chargement
   }
 
 
@@ -70,67 +124,182 @@ class ProfilesPageState extends State<ProfilesPage> with AutomaticKeepAliveClien
     final prefs = await SharedPreferences.getInstance();
     _token = prefs.getString('auth_token');
     if (_token == null) {
-      if (!mounted) return; // Correction : Vérification mounted
-      setState(() {
-        _error = 'Token manquant. Reconnectez-vous.';
-        _isLoading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _profileState = _profileState.copyWith(
+            hasError: true,
+            errorMessage: 'Token manquant. Reconnectez-vous.',
+            isLoading: false,
+          );
+        });
+      }
       return;
     }
     await _fetchUser();
   }
-  Future<void> _fetchUser() async {
+  Future<void> _fetchUser({bool forceRefresh = false}) async {
     if (_token == null) {
+      if (mounted) {
+        setState(() {
+          _profileState = _profileState.copyWith(
+            hasError: true,
+            errorMessage: 'Token manquant. Reconnectez-vous.',
+            isLoading: false,
+          );
+        });
+      }
       return;
     }
-    bool shouldUpdateUI = true; // Flag pour éviter return in finally
-    try {
-      setState(() => _isLoading = true);
-      final userInfo = await _profileService.getUserInfo(_token!);
-      if (!mounted) {
-        shouldUpdateUI = false;
+
+    // Vérifier le cache si ce n'est pas un refresh forcé
+    if (!forceRefresh && _cachedUserData != null && _lastUserFetch != null) {
+      final timeSinceLastFetch = DateTime.now().difference(_lastUserFetch!);
+      if (timeSinceLastFetch < _userCacheDuration) {
+        // Utiliser les données en cache
+        if (mounted) {
+          setState(() {
+            _profileState = _profileState.copyWith(
+              userData: _cachedUserData,
+              isLoading: false,
+              hasError: false,
+              errorMessage: null,
+              isAdmin: _cachedUserData!['email'] == 'nyundumathryme@gmail.com' || _cachedUserData!['role'] == 'admin',
+            );
+            _nameController.text = _cachedUserData!['name'] ?? '';
+          });
+        }
+
+        // Charger les employés seulement si admin
+        if (_profileState.isAdmin) {
+          await _loadCachedEmployees();
+          await _fetchEmployees();
+        }
+
+        // Démarrer le refresh automatique seulement après le chargement réussi
+        _startAutoRefresh();
         return;
       }
+    }
+
+    setState(() {
+      _profileState = _profileState.copyWith(isLoading: true, hasError: false);
+    });
+
+    try {
+      final userInfo = await _profileService.getUserInfo(_token!);
+
+      // Mettre à jour le cache
+      _cachedUserData = userInfo;
+      _lastUserFetch = DateTime.now();
+
+      if (!mounted) return;
+
       setState(() {
-        _userData = userInfo;
+        _profileState = _profileState.copyWith(
+          userData: userInfo,
+          isLoading: false,
+          hasError: false,
+          errorMessage: null,
+          isAdmin: userInfo['email'] == 'nyundumathryme@gmail.com' || userInfo['role'] == 'admin',
+        );
         _nameController.text = userInfo['name'] ?? '';
-        _error = null;
-        // Vérifier les permissions admin
-        _isAdmin = userInfo['email'] == 'nyundumathryme@gmail.com' || userInfo['role'] == 'admin';
       });
-      
+
       // Charger les employés seulement si admin
-      if (_isAdmin) {
+      if (_profileState.isAdmin) {
         await _loadCachedEmployees();
         await _fetchEmployees();
       }
+
+      // Démarrer le refresh automatique seulement après le chargement réussi
+      _startAutoRefresh();
+
     } catch (e) {
-      if (!mounted) {
-        shouldUpdateUI = false;
-        return;
+      if (!mounted) return;
+
+      // Fallback sur le cache si disponible en cas d'erreur réseau
+      if (_cachedUserData != null && _lastUserFetch != null) {
+        final timeSinceLastFetch = DateTime.now().difference(_lastUserFetch!);
+        if (timeSinceLastFetch < Duration(minutes: 60)) { // Cache valide jusqu'à 1 heure en cas d'urgence
+          if (mounted) {
+            setState(() {
+              _profileState = _profileState.copyWith(
+                userData: _cachedUserData,
+                isLoading: false,
+                hasError: false,
+                errorMessage: null,
+                isAdmin: _cachedUserData!['email'] == 'nyundumathryme@gmail.com' || _cachedUserData!['role'] == 'admin',
+              );
+              _nameController.text = _cachedUserData!['name'] ?? '';
+            });
+          }
+
+          // Charger les employés seulement si admin
+          if (_profileState.isAdmin) {
+            await _loadCachedEmployees();
+            await _fetchEmployees();
+          }
+
+          // Démarrer le refresh automatique seulement après le chargement réussi
+          _startAutoRefresh();
+          return;
+        }
       }
-      setState(() => _error = e.toString());
-    } finally {
-      if (shouldUpdateUI && mounted) { // Correction : Flag + mounted pour éviter control_flow_in_finally
-        setState(() => _isLoading = false);
-      }
+
+      setState(() {
+        _profileState = _profileState.copyWith(
+          isLoading: false,
+          hasError: true,
+          errorMessage: e.toString(),
+        );
+      });
     }
   }
 
-  // Charge les employés depuis le cache local au démarrage
+  // Charger les données hors ligne depuis le cache
+  Future<void> _loadOfflineData() async {
+    if (_cachedUserData == null) return;
+
+    setState(() {
+      _profileState = _profileState.copyWith(
+        userData: _cachedUserData,
+        isLoading: false,
+        hasError: false,
+        errorMessage: null,
+        isAdmin: _cachedUserData!['email'] == 'nyundumathryme@gmail.com' || _cachedUserData!['role'] == 'admin',
+      );
+      _nameController.text = _cachedUserData!['name'] ?? '';
+    });
+
+    // Charger les employés depuis le cache seulement si admin
+    if (_profileState.isAdmin) {
+      await _loadCachedEmployees();
+    }
+
+    // Démarrer le refresh automatique
+    _startAutoRefresh();
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Mode hors ligne activé - Données chargées depuis le cache'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+    }
+  }
+
   Future<void> _loadCachedEmployees() async {
     try {
       final cachedEmployees = await EmployeeCacheService.getCachedEmployees();
       if (mounted && cachedEmployees.isNotEmpty) {
         setState(() {
-          _employees = cachedEmployees;
+          _profileState = _profileState.copyWith(employees: cachedEmployees);
         });
       }
     } catch (e) {
       // Gérer l'erreur silencieusement
     }
-    // Puis charger depuis le serveur
-    await _fetchEmployees();
   }
 
   // Démarre la mise à jour automatique toutes les 30 secondes
@@ -149,8 +318,8 @@ class ProfilesPageState extends State<ProfilesPage> with AutomaticKeepAliveClien
         return;
       }
       
-      // Rafraîchir les employés en arrière-plan
-      if (!_isAutoRefreshing) {
+      // Rafraîchir les employés en arrière-plan seulement si admin
+      if (_profileState.isAdmin && !_isAutoRefreshing) {
         _isAutoRefreshing = true;
         try {
           await _fetchEmployees();
@@ -175,12 +344,17 @@ class ProfilesPageState extends State<ProfilesPage> with AutomaticKeepAliveClien
 
   Future<void> _fetchEmployees() async {
     if (_token == null) return;
-    setState(() => _isLoadingEmployees = true);
+    setState(() {
+      _profileState = _profileState.copyWith(isLoadingEmployees: true);
+    });
     try {
       final employees = await _profileService.getEmployees(_token!);
       if (mounted) {
         setState(() {
-          _employees = employees;
+          _profileState = _profileState.copyWith(
+            employees: employees,
+            isLoadingEmployees: false,
+          );
         });
       }
     } catch (e) {
@@ -191,7 +365,9 @@ class ProfilesPageState extends State<ProfilesPage> with AutomaticKeepAliveClien
       }
     } finally {
       if (mounted) {
-        setState(() => _isLoadingEmployees = false);
+        setState(() {
+          _profileState = _profileState.copyWith(isLoadingEmployees: false);
+        });
       }
     }
   }
@@ -423,8 +599,9 @@ class ProfilesPageState extends State<ProfilesPage> with AutomaticKeepAliveClien
     if (_token == null || _nameController.text.isEmpty) {
       return;
     }
-    bool shouldUpdateUI = true; // Flag pour éviter return in finally
-    setState(() => _isUpdating = true);
+    setState(() {
+      _profileState = _profileState.copyWith(isUpdating: true);
+    });
     try {
       String? base64Photo;
       if (_selectedImage != null) {
@@ -436,34 +613,32 @@ class ProfilesPageState extends State<ProfilesPage> with AutomaticKeepAliveClien
         name: _nameController.text,
         profilePhoto: base64Photo, // Envoi de base64 si image sélectionnée
       );
-      if (!mounted) {
-        shouldUpdateUI = false;
-        return;
-      }
-      setState(() => _userData = updated);
-      
+      if (!mounted) return;
+      setState(() {
+        _profileState = _profileState.copyWith(userData: updated, isUpdating: false);
+      });
+
       // Prolonger la session car l'utilisateur est actif
       await SessionService.extendSession();
-      
+
       if (mounted) { // Correction : use_build_context_synchronously
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Profil mis à jour !'), backgroundColor: Color(0xFF4CAF50)),
         );
       }
-      await _fetchUser(); // Refresh
+      await _fetchUser(forceRefresh: true); // Forcer le refresh pour obtenir les nouvelles données
     } catch (e) {
-      if (!mounted) {
-        shouldUpdateUI = false;
-        return;
-      }
+      if (!mounted) return;
       if (mounted) { // Correction : use_build_context_synchronously
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Erreur: $e'), backgroundColor: Colors.red),
         );
       }
     } finally {
-      if (shouldUpdateUI && mounted) { // Correction : Flag + mounted pour éviter control_flow_in_finally
-        setState(() => _isUpdating = false);
+      if (mounted) {
+        setState(() {
+          _profileState = _profileState.copyWith(isUpdating: false);
+        });
       }
     }
   }
@@ -490,7 +665,7 @@ class ProfilesPageState extends State<ProfilesPage> with AutomaticKeepAliveClien
       return;
     }
     bool shouldUpdateUI = true; // Flag pour éviter return in finally
-    setState(() => _isUpdating = true);
+    setState(() => _profileState = _profileState.copyWith(isUpdating: true));
     try {
       await _profileService.updatePassword(
         _token!,
@@ -521,7 +696,7 @@ class ProfilesPageState extends State<ProfilesPage> with AutomaticKeepAliveClien
       }
     } finally {
       if (shouldUpdateUI && mounted) { // Correction : Flag + mounted pour éviter control_flow_in_finally
-        setState(() => _isUpdating = false);
+        setState(() => _profileState = _profileState.copyWith(isUpdating: false));
       }
     }
   }
@@ -548,7 +723,7 @@ class ProfilesPageState extends State<ProfilesPage> with AutomaticKeepAliveClien
       return;
     }
     bool shouldUpdateUI = true; // Flag pour éviter return in finally
-    setState(() => _isUpdating = true);
+    setState(() => _profileState = _profileState.copyWith(isUpdating: true));
     try {
       await _profileService.deleteAccount(_token!);
       if (!mounted) {
@@ -576,7 +751,7 @@ class ProfilesPageState extends State<ProfilesPage> with AutomaticKeepAliveClien
       }
     } finally {
       if (shouldUpdateUI && mounted) { // Correction : Flag + mounted pour éviter control_flow_in_finally
-        setState(() => _isUpdating = false);
+        setState(() => _profileState = _profileState.copyWith(isUpdating: false));
       }
     }
   }
@@ -1040,8 +1215,10 @@ class ProfilesPageState extends State<ProfilesPage> with AutomaticKeepAliveClien
           IconButton(
             icon: const Icon(Icons.refresh),
             onPressed: () {
-              _fetchUser();
-              _fetchEmployees();
+              _fetchUser(forceRefresh: true); // Forcer le refresh manuel
+              if (_profileState.isAdmin) {
+                _fetchEmployees();
+              }
               SessionService.extendSession(); // Prolonger lors du refresh manuel
             },
           ),
@@ -1052,33 +1229,102 @@ class ProfilesPageState extends State<ProfilesPage> with AutomaticKeepAliveClien
           ),
         ],
       ),
-      body: _isLoading
-          ? const Center(
-              child: CircularProgressIndicator(
-                color: Color(0xFF2E7D32),
+      body: _profileState.isLoading
+          ? Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  CircularProgressIndicator(
+                    color: Color(0xFF2E7D32),
+                    strokeWidth: 4,
+                  ),
+                  SizedBox(height: 24),
+                  Text(
+                    'Chargement de votre profil...',
+                    style: TextStyle(
+                      fontSize: 16,
+                      color: Color(0xFF2E7D32),
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  SizedBox(height: 8),
+                  Text(
+                    'Vérification de la connexion et récupération des données',
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: Colors.grey[600],
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                ],
               ),
             )
-          : _error != null
+          : _profileState.hasError
               ? Center(
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                       Icon(Icons.error_outline, size: 64, color: Colors.red[300]),
                       const SizedBox(height: 16),
-                      Text(_error!, style: TextStyle(color: Colors.grey[600])),
-                      const SizedBox(height: 16),
-                      ElevatedButton(
-                        onPressed: () => Navigator.pushReplacementNamed(context, '/registration'),
-                        style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF2E7D32)),
-                        child: const Text('Se connecter', style: TextStyle(color: Colors.white)),
+                      Text(
+                        'Erreur de chargement',
+                        style: TextStyle(color: Colors.grey[600], fontSize: 18, fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(height: 8),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 32),
+                        child: Text(
+                          _profileState.errorMessage ?? 'Erreur inconnue',
+                          style: TextStyle(color: Colors.grey[600]),
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                      const SizedBox(height: 24),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          ElevatedButton.icon(
+                            onPressed: () => _fetchUser(forceRefresh: true), // Forcer le refresh en cas d'erreur
+                            icon: const Icon(Icons.refresh),
+                            label: const Text('Réessayer'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFF2E7D32),
+                              foregroundColor: Colors.white,
+                            ),
+                          ),
+                          const SizedBox(width: 16),
+                          if (_cachedUserData != null) ...[
+                            OutlinedButton.icon(
+                              onPressed: () => _loadOfflineData(), // Mode hors ligne
+                              icon: const Icon(Icons.offline_bolt),
+                              label: const Text('Mode hors ligne'),
+                              style: OutlinedButton.styleFrom(
+                                side: const BorderSide(color: Color(0xFF2E7D32)),
+                                foregroundColor: const Color(0xFF2E7D32),
+                              ),
+                            ),
+                            const SizedBox(width: 16),
+                          ],
+                          OutlinedButton.icon(
+                            onPressed: () => Navigator.pushReplacementNamed(context, '/registration'),
+                            icon: const Icon(Icons.login),
+                            label: const Text('Se connecter'),
+                            style: OutlinedButton.styleFrom(
+                              side: const BorderSide(color: Color(0xFF2E7D32)),
+                              foregroundColor: const Color(0xFF2E7D32),
+                            ),
+                          ),
+                        ],
                       ),
                     ],
                   ),
                 )
               : RefreshIndicator(
                   onRefresh: () async {
-                    await _fetchUser();
-                    await _fetchEmployees();
+                    await _fetchUser(forceRefresh: true); // Forcer le refresh lors du pull-to-refresh
+                    if (_profileState.isAdmin) {
+                      await _fetchEmployees();
+                    }
                   },
                   color: const Color(0xFF2E7D32),
                   child: SingleChildScrollView(
@@ -1111,10 +1357,10 @@ class ProfilesPageState extends State<ProfilesPage> with AutomaticKeepAliveClien
                                     CircleAvatar(
                                       radius: 60,
                                       backgroundColor: const Color(0xFFE8F5E8),
-                                      backgroundImage: _userData?['profilePhoto'] != null && _userData!['profilePhoto'].isNotEmpty
-                                          ? MemoryImage(base64Decode(_userData!['profilePhoto']))
+                                      backgroundImage: _profileState.userData?['profilePhoto'] != null && _profileState.userData!['profilePhoto'].isNotEmpty
+                                          ? MemoryImage(base64Decode(_profileState.userData!['profilePhoto']))
                                           : null,
-                                      child: _userData?['profilePhoto'] == null || _userData!['profilePhoto'].isEmpty
+                                      child: _profileState.userData?['profilePhoto'] == null || _profileState.userData!['profilePhoto'].isEmpty
                                           ? const Icon(Icons.person, size: 60, color: Color(0xFF2E7D32))
                                           : null,
                                     ),
@@ -1163,7 +1409,7 @@ class ProfilesPageState extends State<ProfilesPage> with AutomaticKeepAliveClien
                                       const SizedBox(width: 12),
                                       Expanded(
                                         child: Text(
-                                          _userData?['email'] ?? 'Non disponible',
+                                          _profileState.userData?['email'] ?? 'Non disponible',
                                           style: const TextStyle(fontSize: 16),
                                         ),
                                       ),
@@ -1173,7 +1419,7 @@ class ProfilesPageState extends State<ProfilesPage> with AutomaticKeepAliveClien
                                 const SizedBox(height: 20),
                                 // Date d'inscription
                                 Text(
-                                  'Inscrit le: ${_userData?['createdAt'] != null ? DateTime.parse(_userData!['createdAt']).toLocal().toString().split(' ')[0] : 'Inconnue'}',
+                                  'Inscrit le: ${_profileState.userData?['createdAt'] != null ? DateTime.parse(_profileState.userData!['createdAt']).toLocal().toString().split(' ')[0] : 'Inconnue'}',
                                   style: TextStyle(
                                     fontSize: 14,
                                     color: Colors.grey[600],
@@ -1185,13 +1431,13 @@ class ProfilesPageState extends State<ProfilesPage> with AutomaticKeepAliveClien
                                 SizedBox(
                                   width: double.infinity,
                                   child: ElevatedButton(
-                                    onPressed: _isUpdating ? null : _updateUserInfo,
+                                    onPressed: _profileState.isUpdating ? null : _updateUserInfo,
                                     style: ElevatedButton.styleFrom(
                                       backgroundColor: const Color(0xFF2E7D32),
                                       padding: const EdgeInsets.symmetric(vertical: 12),
                                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                                     ),
-                                    child: _isUpdating
+                                    child: _profileState.isUpdating
                                         ? const SizedBox(
                                             width: 20,
                                             height: 20,
@@ -1263,13 +1509,13 @@ class ProfilesPageState extends State<ProfilesPage> with AutomaticKeepAliveClien
                                 SizedBox(
                                   width: double.infinity,
                                   child: ElevatedButton(
-                                    onPressed: _isUpdating ? null : _updatePassword,
+                                    onPressed: _profileState.isUpdating ? null : _updatePassword,
                                     style: ElevatedButton.styleFrom(
                                       backgroundColor: const Color(0xFF2E7D32),
                                       padding: const EdgeInsets.symmetric(vertical: 12),
                                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                                     ),
-                                    child: _isUpdating
+                                    child: _profileState.isUpdating
                                         ? const SizedBox(
                                             width: 20,
                                             height: 20,
@@ -1462,7 +1708,7 @@ class ProfilesPageState extends State<ProfilesPage> with AutomaticKeepAliveClien
                         const SizedBox(height: 16),
                         
                         // Section Création Employé (Admin uniquement)
-                        if (_isAdmin) ...[
+                        if (_profileState.isAdmin) ...[
                         Card(
                           elevation: 8,
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -1663,7 +1909,7 @@ class ProfilesPageState extends State<ProfilesPage> with AutomaticKeepAliveClien
                         const SizedBox(height: 16),
                         
                         // Section Affichage Employés (Admin uniquement)  
-                        if (_isAdmin) ...[
+                        if (_profileState.isAdmin) ...[
                         Card(
                           elevation: 8,
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -1682,18 +1928,18 @@ class ProfilesPageState extends State<ProfilesPage> with AutomaticKeepAliveClien
                                   ),
                                 ),
                                 const SizedBox(height: 16),
-                                if (_isLoadingEmployees)
+                                if (_profileState.isLoadingEmployees)
                                   const Center(child: CircularProgressIndicator())
-                                else if (_employees.isEmpty)
+                                else if (_profileState.employees.isEmpty)
                                   const Text('Aucun employé créé')
                                 else
                                   SizedBox(
                                     height: 300,
                                     child: ListView.builder(
                                       scrollDirection: Axis.horizontal,
-                                      itemCount: _employees.length,
+                                      itemCount: _profileState.employees.length,
                                       itemBuilder: (context, index) {
-                                        final employee = _employees[index];
+                                        final employee = _profileState.employees[index];
                                         final endDate = DateTime.parse(employee['endDate']);
                                         final diff = endDate.difference(DateTime.now()).inDays;
                                         final color = diff > 30 ? Colors.blue : diff > 7 ? Colors.orange : Colors.red;
@@ -1745,7 +1991,7 @@ class ProfilesPageState extends State<ProfilesPage> with AutomaticKeepAliveClien
                         const SizedBox(height: 16),
 
                         // Section Administration (visible uniquement pour l'admin)
-                        if (_isAdmin) ...[
+                        if (_profileState.isAdmin) ...[
                           Card(
                             elevation: 8,
                             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -1990,7 +2236,7 @@ class ProfilesPageState extends State<ProfilesPage> with AutomaticKeepAliveClien
                         SizedBox(
                           width: double.infinity,
                           child: ElevatedButton(
-                            onPressed: _isUpdating ? null : _deleteAccount,
+                            onPressed: _profileState.isUpdating ? null : _deleteAccount,
                             style: ElevatedButton.styleFrom(
                               backgroundColor: Colors.red,
                               padding: const EdgeInsets.symmetric(vertical: 12),
@@ -2005,6 +2251,7 @@ class ProfilesPageState extends State<ProfilesPage> with AutomaticKeepAliveClien
                 ),
     );
   }
+
   @override
   void dispose() {
     _autoRefreshTimer?.cancel();

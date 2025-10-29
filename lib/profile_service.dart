@@ -4,8 +4,10 @@ import 'dart:io';
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'employee_cache_service.dart';
 import 'session_service.dart';
+import 'auth_service.dart';
 
 class ProfileService {
   static String get baseUrl {
@@ -20,7 +22,7 @@ class ProfileService {
   
   // Client HTTP avec timeout optimisé
   static final _client = http.Client();
-  static const _timeout = Duration(seconds: 30); // Timeout de 30 secondes pour connexions lentes
+  static const _timeout = Duration(seconds: 30); // Augmenté à 30 secondes pour gérer les connexions lentes
   
   // Headers par défaut (similaire à AuthService)
   Map<String, String> _getHeaders({String? token}) {
@@ -69,27 +71,148 @@ class ProfileService {
     }
     throw lastException ?? Exception('Request failed after $retries attempts');
   }
+
+  static Completer<String>? _tokenRefresher;
+
+  // Méthode pour gérer une session expirée
+  Future<void> _handleExpiredSession() async {
+    try {
+      final storage = FlutterSecureStorage();
+      await storage.delete(key: 'auth_token');
+      await storage.delete(key: 'refresh_token');
+      await SessionService.endSession();
+    } catch (e) {
+      // Log l'erreur mais ne la propage pas
+      debugPrint('Erreur lors du nettoyage de session: $e');
+    }
+  }
+
+  bool isTokenExpired(String token) {
+    try {
+      final parts = token.split('.');
+      if (parts.length != 3) return true;
+      final String normalized = base64Url.normalize(parts[1]);
+      final String decoded = utf8.decode(base64Url.decode(normalized));
+      final payload = jsonDecode(decoded);
+      final exp = payload['exp'] as int?;
+      if (exp == null) return true;
+      final expiration = DateTime.fromMillisecondsSinceEpoch(exp * 1000);
+      return expiration.isBefore(DateTime.now());
+    } catch (e) {
+      return true;
+    }
+  }
+
+  Future<String> refreshAccessToken() async {
+    final storage = FlutterSecureStorage();
+    final refreshToken = await storage.read(key: 'refresh_token');
+    if (refreshToken == null) {
+      throw Exception('No refresh token available. Please login again.');
+    }
+
+    final response = await _client.post(
+      Uri.parse('$baseUrl/api/auth/refresh-token'),
+      headers: _getHeaders(),
+      body: jsonEncode({'refreshToken': refreshToken}),
+    );
+
+    if (response.statusCode != 200) {
+      final error = jsonDecode(response.body)['error'] ?? 'Failed to refresh token';
+
+      // Si le refresh token est expiré ou invalide, nettoyer la session
+      if (response.statusCode == 401 && (error.contains('expired') || error.contains('invalid'))) {
+        await _handleExpiredSession();
+        throw Exception('Session expirée. Veuillez vous reconnecter.');
+      }
+
+      throw Exception(error);
+    }
+
+    final data = jsonDecode(response.body);
+    final newAccessToken = data['accessToken'];
+    final newRefreshToken = data['refreshToken'];
+
+    await AuthService.saveTokens(newAccessToken, newRefreshToken ?? refreshToken);
+
+    return newAccessToken;
+  }
+
+  Future<String> getFreshToken(String currentToken) async {
+    if (!isTokenExpired(currentToken)) {
+      return currentToken;
+    }
+
+    if (_tokenRefresher != null) {
+      return await _tokenRefresher!.future;
+    }
+
+    _tokenRefresher = Completer<String>();
+
+    try {
+      final newToken = await refreshAccessToken();
+      _tokenRefresher!.complete(newToken);
+      return newToken;
+    } catch (e) {
+      _tokenRefresher!.completeError(e);
+
+      // Si c'est une erreur de session expirée, ne pas retenter automatiquement
+      if (e.toString().contains('Session expirée') || e.toString().contains('Please login again')) {
+        rethrow;
+      }
+
+      // Pour les autres erreurs, permettre une nouvelle tentative plus tard
+      rethrow;
+    } finally {
+      _tokenRefresher = null;
+    }
+  }
+  
   // Récupération des informations utilisateur (section infos)
   Future<Map<String, dynamic>> getUserInfo(String token) async {
-    final response = await _makeRequest(
-      () => _client.get(
-        Uri.parse('$baseUrl/api/user'),
-        headers: _getHeaders(token: token),
-      ),
-    );
-    
-    if (response.statusCode != 200) {
-      throw Exception(jsonDecode(response.body)['error'] ?? 'Erreur lors de la récupération des infos');
+    try {
+      var currentToken = await getFreshToken(token);
+      final response = await _makeRequest(
+        () => _client.get(
+          Uri.parse('$baseUrl/api/user'),
+          headers: _getHeaders(token: currentToken),
+        ),
+        retries: 2, // Réduire à 2 tentatives pour chargement plus rapide
+      );
+
+      if (response.statusCode != 200) {
+        final errorData = jsonDecode(response.body);
+        final errorMessage = errorData['error'] ?? 'Erreur lors de la récupération des infos';
+
+        // Gestion spécifique des erreurs d'authentification
+        if (response.statusCode == 401) {
+          throw Exception('Session expirée. Veuillez vous reconnecter.');
+        } else if (response.statusCode == 403) {
+          throw Exception('Accès refusé. Vérifiez vos permissions.');
+        } else if (response.statusCode >= 500) {
+          throw Exception('Erreur serveur. Réessayez plus tard.');
+        }
+
+        throw Exception(errorMessage);
+      }
+
+      final data = jsonDecode(response.body);
+      return {
+        'email': data['email'],
+        'name': data['name'] ?? '',
+        'profilePhoto': data['profilePhoto'] ?? '',
+        'createdAt': data['createdAt'],
+        'isVerified': data['isVerified'],
+        'role': data['role'] ?? 'user',
+      };
+    } catch (e) {
+      // Re-throw avec message plus clair pour l'utilisateur
+      if (e.toString().contains('Timeout')) {
+        throw Exception('Connexion lente. Vérifiez votre réseau et réessayez.');
+      } else if (e.toString().contains('SocketException')) {
+        throw Exception('Pas de connexion internet. Vérifiez votre réseau.');
+      }
+      rethrow;
     }
-    final data = jsonDecode(response.body);
-    return {
-      'email': data['email'],
-      'name': data['name'] ?? '',
-      'profilePhoto': data['profilePhoto'] ?? '',
-      'createdAt': data['createdAt'],
-      'isVerified': data['isVerified'],
-      'role': data['role'] ?? 'user',
-    }; // Retourne les infos pour la section
   }
   // Mise à jour des informations utilisateur (nom, photo de profil)
   Future<Map<String, dynamic>> updateUserInfo(String token, {String? name, String? profilePhoto}) async {
@@ -99,9 +222,10 @@ class ProfileService {
     if (body.isEmpty) {
       throw Exception('Aucune information à mettre à jour');
     }
+    var currentToken = await getFreshToken(token);
     final response = await http.put(
       Uri.parse('$baseUrl/api/user'),
-      headers: _getHeaders(token: token),
+      headers: _getHeaders(token: currentToken),
       body: jsonEncode(body),
     );
     if (response.statusCode != 200) {
@@ -116,9 +240,10 @@ class ProfileService {
   }
   // Mise à jour du mot de passe
   Future<void> updatePassword(String token, String currentPassword, String newPassword) async {
+    var currentToken = await getFreshToken(token);
     final response = await http.put(
       Uri.parse('$baseUrl/api/user/password'),
-      headers: _getHeaders(token: token),
+      headers: _getHeaders(token: currentToken),
       body: jsonEncode({
         'currentPassword': currentPassword,
         'newPassword': newPassword,
@@ -131,9 +256,10 @@ class ProfileService {
   }
   // Suppression du compte
   Future<void> deleteAccount(String token) async {
+    var currentToken = await getFreshToken(token);
     final response = await http.delete(
       Uri.parse('$baseUrl/api/user'),
-      headers: _getHeaders(token: token),
+      headers: _getHeaders(token: currentToken),
     );
     if (response.statusCode != 200) {
       throw Exception(jsonDecode(response.body)['error'] ?? 'Erreur lors de la suppression du compte');
@@ -150,9 +276,10 @@ class ProfileService {
     required String startDate,
     required String endDate,
   }) async {
+    var currentToken = await getFreshToken(token);
     final response = await http.post(
       Uri.parse('$baseUrl/api/employee'),
-      headers: _getHeaders(token: token),
+      headers: _getHeaders(token: currentToken),
       body: jsonEncode({
         'name': name,
         'position': position,
@@ -200,9 +327,10 @@ class ProfileService {
     if (body.isEmpty) {
       throw Exception('Aucune information à mettre à jour');
     }
+    var currentToken = await getFreshToken(token);
     final response = await http.put(
       Uri.parse('$baseUrl/api/employee/$id'),
-      headers: _getHeaders(token: token),
+      headers: _getHeaders(token: currentToken),
       body: jsonEncode(body),
     );
     if (response.statusCode != 200) {
@@ -223,9 +351,10 @@ class ProfileService {
   }
   // Suppression d'un employé
   Future<void> deleteEmployee(String token, String id) async {
+    var currentToken = await getFreshToken(token);
     final response = await http.delete(
       Uri.parse('$baseUrl/api/employee/$id'),
-      headers: _getHeaders(token: token),
+      headers: _getHeaders(token: currentToken),
     );
     if (response.statusCode != 200) {
       throw Exception(jsonDecode(response.body)['error'] ?? 'Erreur lors de la suppression de l\'employé');
@@ -253,12 +382,13 @@ class ProfileService {
       }
       
       // Récupération depuis le serveur
+      var currentToken = await getFreshToken(token);
       
       // Récupérer depuis le serveur avec optimisations
       final response = await _makeRequest(
         () => _client.get(
           Uri.parse('$baseUrl/api/employees?limit=200'), // Pagination
-          headers: _getHeaders(token: token),
+          headers: _getHeaders(token: currentToken),
         ),
         retries: 2, // 2 tentatives pour éviter les timeouts trop longs
       );

@@ -204,43 +204,110 @@ contentStatsSchema.index({ contentType: 1, contentId: 1 }, { unique: true });
 
 const ContentStats = mongoose.model('ContentStats', contentStatsSchema);
 
-// Middleware
+// Middleware d'authentification amélioré avec gestion des conflits de version
 const authMiddleware = async (req, res, next) => {
   try {
     const token = req.header('Authorization')?.replace('Bearer ', '');
-    
+
     if (!token) {
       console.log('❌ Auth middleware - No token provided');
       return res.status(401).json({ error: 'Access denied' });
     }
-    
+
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    
+
     const user = await User.findById(decoded.id);
     if (!user) {
       console.log(`❌ Auth middleware - User not found for ID: ${decoded.id}`);
       return res.status(401).json({ error: 'User not found' });
     }
-    
+
     // Vérifier si le token existe dans la liste des tokens de l'utilisateur
     const tokenExists = user.tokens.some(t => t.token === token);
     if (!tokenExists) {
-      console.log(`❌ Auth middleware - Invalid token for user: ${user.email}`);
-      return res.status(401).json({ error: 'Token expired or invalid' });
+      // Pour les utilisateurs normaux, essayer de régénérer le token automatiquement
+      if (user.email !== 'nyundumathryme@gmail.com' && user.role !== 'admin') {
+        console.log(`🔄 Auth middleware - Token missing for regular user ${user.email}, attempting auto-refresh`);
+
+        let retryCount = 0;
+        const maxRetries = 3;
+
+        while (retryCount < maxRetries) {
+          try {
+            // Relire le document utilisateur pour avoir la version la plus récente
+            const freshUser = await User.findById(decoded.id);
+            if (!freshUser) {
+              console.log(`❌ Auth middleware - User not found during refresh for ID: ${decoded.id}`);
+              return res.status(401).json({ error: 'User not found' });
+            }
+
+            // Nettoyer les anciens tokens (garder seulement les plus récents)
+            const now = Date.now();
+            freshUser.tokens = freshUser.tokens.filter(t => {
+              // Garder seulement les tokens créés il y a moins de 24h
+              const tokenAge = t.createdAt ? (now - new Date(t.createdAt).getTime()) : now;
+              return tokenAge < 24 * 60 * 60 * 1000; // 24 heures
+            });
+
+            // Générer un nouveau token pour l'utilisateur
+            const newToken = jwt.sign({ id: freshUser._id }, process.env.JWT_SECRET, { expiresIn: '1h' });
+            const newRefreshToken = jwt.sign({ id: freshUser._id }, process.env.JWT_REFRESH_SECRET, { expiresIn: '7d' });
+
+            // Ajouter le nouveau token
+            freshUser.tokens.push({
+              token: newToken,
+              refreshToken: newRefreshToken,
+              createdAt: new Date()
+            });
+
+            await freshUser.save();
+
+            // Utiliser le nouveau token pour cette requête
+            req.token = newToken;
+            console.log(`✅ Auth middleware - Token refreshed for regular user ${user.email}`);
+            break; // Sortir de la boucle de retry en cas de succès
+
+          } catch (refreshError) {
+            retryCount++;
+
+            // Vérifier si c'est une erreur de version MongoDB
+            if (refreshError.name === 'VersionError' || refreshError.message.includes('version')) {
+              console.log(`⚠️ Auth middleware - Version conflict during token refresh (attempt ${retryCount}/${maxRetries}):`, refreshError.message);
+
+              if (retryCount >= maxRetries) {
+                console.log(`❌ Auth middleware - Max retries exceeded for token refresh for ${user.email}`);
+                return res.status(401).json({ error: 'Token expired or invalid' });
+              }
+
+              // Attendre un peu avant de réessayer (backoff exponentiel)
+              await new Promise(resolve => setTimeout(resolve, Math.pow(2, retryCount) * 100));
+              continue; // Réessayer
+            } else {
+              // Autre type d'erreur, ne pas réessayer
+              console.log(`❌ Auth middleware - Failed to refresh token for ${user.email}:`, refreshError.message);
+              return res.status(401).json({ error: 'Token expired or invalid' });
+            }
+          }
+        }
+      } else {
+        console.log(`❌ Auth middleware - Invalid token for admin user: ${user.email}`);
+        return res.status(401).json({ error: 'Token expired or invalid' });
+      }
     }
-    
+
     // Vérifier le statut du compte
     if (user.status === 'blocked') {
       return res.status(403).json({ error: 'Compte bloqué. Contactez l\'administrateur.' });
     }
-    
+
     if (user.status === 'suspended') {
       return res.status(403).json({ error: 'Compte suspendu. Contactez l\'administrateur.' });
     }
-    
+
     // Log minimal - seulement en cas de débogage
     // console.log(`✅ Authenticated: ${user.email}`);
     req.user = user;
+    req.userId = user._id; // Ajouter userId pour compatibilité
     next();
   } catch (err) {
     console.log(`❌ Auth middleware error: ${err.message}`);
@@ -256,7 +323,7 @@ const permissionMiddleware = (permission) => {
       if (req.user.email === 'nyundumathryme@gmail.com' || req.user.role === 'admin') {
         return next();
       }
-      
+
       // Mapper les permissions aux noms dans la DB
       const permissionMap = {
         'blog': 'canCreateArticles',
@@ -264,15 +331,15 @@ const permissionMiddleware = (permission) => {
         'employees': 'canManageEmployees',
         'analytics': 'canAccessAnalytics'
       };
-      
+
       const dbPermission = permissionMap[permission];
       if (!dbPermission) {
         console.log(`❌ Permission inconnue: ${permission}`);
-        return res.status(403).json({ 
-          error: `Permission inconnue: ${permission}` 
+        return res.status(403).json({
+          error: `Permission inconnue: ${permission}`
         });
       }
-      
+
       // Pour les utilisateurs standards, donner accès par défaut au blog et aux médias
       // Les employés peuvent être consultés par tous (lecture seule)
       const defaultPermissions = ['blog', 'media'];
@@ -280,22 +347,22 @@ const permissionMiddleware = (permission) => {
         console.log(`✅ Permission accordée par défaut pour: ${permission} à ${req.user.email}`);
         return next();
       }
-      
+
       // Accès en lecture seule aux employés pour tous les utilisateurs
       // (la modification reste réservée aux admins)
       if (permission === 'employees' && req.method === 'GET') {
         console.log(`✅ Permission de lecture accordée pour: ${permission} à ${req.user.email}`);
         return next();
       }
-      
+
       // Vérifier si l'utilisateur a la permission requise
       if (!req.user.permissions || !req.user.permissions[dbPermission]) {
         console.log(`❌ Permission refusée: ${permission} (${dbPermission}) pour ${req.user.email}`);
-        return res.status(403).json({ 
-          error: `Permission requise: ${permission}. Contactez votre administrateur.` 
+        return res.status(403).json({
+          error: `Permission requise: ${permission}. Contactez votre administrateur.`
         });
       }
-      
+
       console.log(`✅ Permission accordée: ${permission} à ${req.user.email}`);
       next();
     } catch (error) {
@@ -839,22 +906,61 @@ app.post('/api/login-verify', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-// Refresh Token Route
+// Refresh Token Route avec gestion des conflits de version
 app.post('/api/refresh-token', async (req, res) => {
   try {
     const { refreshToken } = req.body;
     if (!refreshToken) return res.status(401).json({ error: 'Refresh token required' });
+
     const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
     const user = await User.findById(decoded.id);
     if (!user) return res.status(401).json({ error: 'Invalid refresh token' });
-    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: '1h' });
-    const newRefreshToken = jwt.sign({ id: user._id }, process.env.JWT_REFRESH_SECRET, { expiresIn: '7d' });
-    // Update tokens
-    user.tokens = user.tokens.filter(t => t.refreshToken !== refreshToken);
-    user.tokens.push({ token, refreshToken: newRefreshToken });
-    await user.save();
-    res.json({ token, refreshToken: newRefreshToken });
+
+    let retryCount = 0;
+    const maxRetries = 3;
+
+    while (retryCount < maxRetries) {
+      try {
+        // Relire le document utilisateur pour avoir la version la plus récente
+        const freshUser = await User.findById(decoded.id);
+        if (!freshUser) return res.status(401).json({ error: 'Invalid refresh token' });
+
+        const token = jwt.sign({ id: freshUser._id }, process.env.JWT_SECRET, { expiresIn: '1h' });
+        const newRefreshToken = jwt.sign({ id: freshUser._id }, process.env.JWT_REFRESH_SECRET, { expiresIn: '7d' });
+
+        // Update tokens - supprimer l'ancien refresh token et ajouter le nouveau
+        freshUser.tokens = freshUser.tokens.filter(t => t.refreshToken !== refreshToken);
+        freshUser.tokens.push({ token, refreshToken: newRefreshToken });
+
+        await freshUser.save();
+
+        res.json({ token, refreshToken: newRefreshToken });
+        return; // Sortir avec succès
+
+      } catch (saveError) {
+        retryCount++;
+
+        // Vérifier si c'est une erreur de version MongoDB
+        if (saveError.name === 'VersionError' || saveError.message.includes('version')) {
+          console.log(`⚠️ Refresh token - Version conflict (attempt ${retryCount}/${maxRetries}):`, saveError.message);
+
+          if (retryCount >= maxRetries) {
+            console.log(`❌ Refresh token - Max retries exceeded`);
+            return res.status(500).json({ error: 'Service temporarily unavailable' });
+          }
+
+          // Attendre un peu avant de réessayer (backoff exponentiel)
+          await new Promise(resolve => setTimeout(resolve, Math.pow(2, retryCount) * 100));
+          continue; // Réessayer
+        } else {
+          // Autre type d'erreur, ne pas réessayer
+          console.error('❌ Refresh token error:', saveError.message);
+          return res.status(500).json({ error: 'Failed to refresh token' });
+        }
+      }
+    }
   } catch (err) {
+    console.error('❌ Refresh token verification error:', err.message);
     res.status(401).json({ error: 'Invalid refresh token' });
   }
 });
@@ -872,7 +978,7 @@ app.post('/api/logout', authMiddleware, async (req, res) => {
 // GET /api/user : Récupère infos utilisateur
 app.get('/api/user', authMiddleware, async (req, res) => {
   try {
-    console.log(`👤 Fetch user: ${req.user.email}`);
+    // Vérifier si les données utilisateur sont en cache (optionnel pour optimisations futures)
     let user = await User.findById(req.user._id).select('-password -otp -tokens');
     
     if (!user) {
@@ -895,6 +1001,11 @@ app.get('/api/user', authMiddleware, async (req, res) => {
         { new: true }
       ).select('-password -otp -tokens');
       console.log(`✅ Auto-upgraded ${user.email} to admin with full permissions`);
+    }
+    
+    // Log seulement en mode debug ou pour les admins
+    if (user.role === 'admin' || process.env.NODE_ENV === 'development') {
+      console.log(`👤 Fetch user: ${req.user.email}`);
     }
     
     res.json(user);

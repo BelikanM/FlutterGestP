@@ -2,6 +2,8 @@
 import 'package:flutter/material.dart';
 import '../blog_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../notification_service.dart';
+import '../profile_service.dart';
 
 class BlogEditorPage extends StatefulWidget {
   final Map<String, dynamic>? article; // null pour création, article existant pour édition
@@ -92,6 +94,24 @@ class BlogEditorPageState extends State<BlogEditorPage> with TickerProviderState
           tags: tags,
         );
         debugPrint('✅ Article created successfully: ${result['article']?['_id']}');
+
+        // Notifier tous les utilisateurs du nouvel article
+        if (_isPublished) {
+          try {
+            // Récupérer le nom de l'auteur
+            final profileService = ProfileService();
+            final userInfo = await profileService.getUserInfo(_token!);
+            final authorName = userInfo['name'] ?? 'Auteur inconnu';
+
+            await NotificationService.notifyNewArticle(
+              title: _titleController.text,
+              author: authorName,
+            );
+            debugPrint('🔔 Notification sent for new article');
+          } catch (e) {
+            debugPrint('❌ Error sending notification: $e');
+          }
+        }
       } else {
         // Mise à jour d'un article existant
         debugPrint('📝 Updating article: ${widget.article!['_id']}');

@@ -4,6 +4,8 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/chat_models.dart';
+import '../notification_service.dart';
+import '../profile_service.dart';
 
 class ChatService {
   // URL du backend selon la plateforme
@@ -111,7 +113,26 @@ class ChatService {
 
       if (response.statusCode == 201) {
         final data = json.decode(response.body);
-        return ChatMessage.fromJson(data['message']);
+        final message = ChatMessage.fromJson(data['message']);
+        
+        // Notifier tous les utilisateurs du partage d'article
+        try {
+          final token = await _getAuthToken();
+          if (token != null) {
+            final profileService = ProfileService();
+            final userInfo = await profileService.getUserInfo(token);
+            final senderName = userInfo['name'] ?? 'Utilisateur inconnu';
+            
+            await NotificationService.notifyGroupMessage(
+              senderName: senderName,
+              message: '📝 Article partagé: $title',
+            );
+          }
+        } catch (e) {
+          // Log silencieux en cas d'erreur de notification
+        }
+        
+        return message;
       } else {
         throw Exception('Erreur ${response.statusCode}: ${response.body}');
       }
@@ -138,7 +159,26 @@ class ChatService {
 
       if (response.statusCode == 201) {
         final data = json.decode(response.body);
-        return ChatMessage.fromJson(data['message']);
+        final message = ChatMessage.fromJson(data['message']);
+        
+        // Notifier tous les utilisateurs du nouveau message
+        try {
+          final token = await _getAuthToken();
+          if (token != null) {
+            final profileService = ProfileService();
+            final userInfo = await profileService.getUserInfo(token);
+            final senderName = userInfo['name'] ?? 'Utilisateur inconnu';
+            
+            await NotificationService.notifyGroupMessage(
+              senderName: senderName,
+              message: content.length > 50 ? '${content.substring(0, 50)}...' : content,
+            );
+          }
+        } catch (e) {
+          // Log silencieux en cas d'erreur de notification
+        }
+        
+        return message;
       } else {
         throw Exception('Erreur ${response.statusCode}: ${response.body}');
       }
@@ -186,7 +226,27 @@ class ChatService {
 
       if (response.statusCode == 201) {
         final data = json.decode(response.body);
-        return ChatMessage.fromJson(data['message']);
+        final message = ChatMessage.fromJson(data['message']);
+        
+        // Notifier tous les utilisateurs du nouveau message média
+        try {
+          final token = await _getAuthToken();
+          if (token != null) {
+            final profileService = ProfileService();
+            final userInfo = await profileService.getUserInfo(token);
+            final senderName = userInfo['name'] ?? 'Utilisateur inconnu';
+            
+            final messageText = content ?? '📎 Média partagé';
+            await NotificationService.notifyGroupMessage(
+              senderName: senderName,
+              message: messageText.length > 50 ? '${messageText.substring(0, 50)}...' : messageText,
+            );
+          }
+        } catch (e) {
+          // Log silencieux en cas d'erreur de notification
+        }
+        
+        return message;
       } else {
         throw Exception('Erreur ${response.statusCode}: ${response.body}');
       }

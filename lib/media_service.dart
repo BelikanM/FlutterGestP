@@ -5,6 +5,8 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:file_picker/file_picker.dart';
 import 'auth_service.dart';
+import 'notification_service.dart';
+import 'profile_service.dart';
 
 class MediaService {
   static String get baseUrl {
@@ -114,7 +116,31 @@ class MediaService {
         final mediasJson = data['medias'] as List;
         
         // ${mediasJson.length} medias uploaded successfully
-        return mediasJson.map((media) => mediaFromJson(media)).toList();
+        
+        final uploadedMedias = mediasJson.map((media) => mediaFromJson(media)).toList();
+        
+        // Notifier tous les utilisateurs des nouveaux médias
+        try {
+          final token = await AuthService.getToken();
+          if (token != null) {
+            final profileService = ProfileService();
+            final userInfo = await profileService.getUserInfo(token);
+            final uploaderName = userInfo['name'] ?? 'Utilisateur inconnu';
+            
+            for (final media in uploadedMedias) {
+              await NotificationService.notifyNewMedia(
+                filename: media.originalName,
+                type: media.type,
+                uploadedBy: uploaderName,
+              );
+            }
+            // Notifications sent for ${uploadedMedias.length} medias
+          }
+        } catch (e) {
+          // Error sending notifications: $e
+        }
+        
+        return uploadedMedias;
       } else {
         final error = json.decode(responseBody);
         throw Exception(error['error'] ?? 'Erreur lors du téléchargement');
