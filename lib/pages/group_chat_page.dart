@@ -16,6 +16,7 @@ import '../models/chat_models.dart';
 import '../components/html5_media_viewer.dart';
 import '../media_service.dart';
 import '../widgets/background_pattern.dart';
+import 'blog_detail_page.dart';
 
 class GroupChatPage extends StatefulWidget {
   const GroupChatPage({super.key});
@@ -999,6 +1000,19 @@ class _GroupChatPageState extends State<GroupChatPage> {
     }
   }
 
+  void _viewBlogArticle(ChatMessage message) {
+    if (message.blogArticleId?.isNotEmpty == true) {
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (context) => BlogDetailPage(
+            articleId: message.blogArticleId!,
+            fromChat: true,
+          ),
+        ),
+      );
+    }
+  }
+
   void _viewMedia(ChatMessage message) {
     if (message.isMediaMessage) {
       final mediaUrl = _chatService.getMediaUrl(message.mediaUrl);
@@ -1597,7 +1611,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
                         ),
                       ),
                     ),
-                    // Boutons d'action rapide pour mes messages
+                            // Boutons d'action rapide pour mes messages
                     if (isMe)
                       Padding(
                         padding: const EdgeInsets.only(top: 4),
@@ -1693,6 +1707,39 @@ class _GroupChatPageState extends State<GroupChatPage> {
                               ),
                             ),
                           ],
+                        ),
+                      ),
+                    // Bouton œil pour les messages de partage de blog
+                    if (message.isBlogShare)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: InkWell(
+                          onTap: () => _viewBlogArticle(message),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: Colors.blue.withValues(alpha: 0.2),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  Icons.remove_red_eye,
+                                  size: 12,
+                                  color: Colors.blue.shade300,
+                                ),
+                                const SizedBox(width: 4),
+                                Text(
+                                  'Voir l\'article',
+                                  style: TextStyle(
+                                    color: Colors.blue.shade300,
+                                    fontSize: 10,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
                         ),
                       ),
                   ],

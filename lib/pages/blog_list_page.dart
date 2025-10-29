@@ -1,9 +1,7 @@
-// pages/blog_list_page.dart
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_html/flutter_html.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:intl/intl.dart';
 import '../blog_service.dart';
@@ -441,18 +439,7 @@ class BlogListPageState extends State<BlogListPage> {
             if (article['content'] != null) ...[
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 16),
-                height: 60,
-                child: Html(
-                  data: article['content']?.toString() ?? '',
-                  style: {
-                    'body': Style(
-                      fontSize: FontSize(14),
-                      color: Colors.grey[800],
-                      maxLines: 2,
-                      textOverflow: TextOverflow.ellipsis,
-                    ),
-                  },
-                ),
+                child: _buildTruncatedHtmlContent(article['content']?.toString() ?? ''),
               ),
             ],
 
@@ -728,6 +715,46 @@ class BlogListPageState extends State<BlogListPage> {
         size: 24,
       ),
     );
+  }
+
+  /// Widget pour afficher un aperçu tronqué du contenu HTML
+  Widget _buildTruncatedHtmlContent(String htmlContent) {
+    // Convertir le HTML en texte brut pour la prévisualisation
+    String plainText = _htmlToPlainText(htmlContent);
+
+    // Tronquer le texte à environ 150 caractères
+    const int maxLength = 150;
+    String truncatedText = plainText.length > maxLength
+        ? '${plainText.substring(0, maxLength)}...'
+        : plainText;
+
+    return Text(
+      truncatedText,
+      style: TextStyle(
+        fontSize: 14,
+        color: Colors.grey[800],
+        height: 1.4,
+      ),
+      maxLines: 2,
+      overflow: TextOverflow.ellipsis,
+    );
+  }
+
+  /// Convertit un contenu HTML en texte brut
+  String _htmlToPlainText(String html) {
+    // Supprimer les balises HTML de base
+    String text = html
+        .replaceAll(RegExp(r'<[^>]*>'), '') // Supprimer toutes les balises
+        .replaceAll('&nbsp;', ' ') // Remplacer les espaces insécables
+        .replaceAll('&amp;', '&') // Remplacer les &
+        .replaceAll('&lt;', '<') // Remplacer les <
+        .replaceAll('&gt;', '>') // Remplacer les >
+        .replaceAll('&quot;', '"') // Remplacer les guillemets
+        .replaceAll('&apos;', "'") // Remplacer les apostrophes
+        .replaceAll(RegExp(r'\s+'), ' ') // Normaliser les espaces
+        .trim();
+
+    return text;
   }
 
   @override

@@ -7,12 +7,15 @@ import 'package:flutter_html/flutter_html.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:intl/intl.dart';
 import '../blog_service.dart';
+import '../services/chat_service.dart';
 import 'blog_editor_page.dart';
+import 'group_chat_page.dart';
 
 class BlogDetailPage extends StatefulWidget {
   final String articleId;
+  final bool fromChat;
   
-  const BlogDetailPage({super.key, required this.articleId});
+  const BlogDetailPage({super.key, required this.articleId, this.fromChat = false});
 
   @override
   BlogDetailPageState createState() => BlogDetailPageState();
@@ -20,6 +23,7 @@ class BlogDetailPage extends StatefulWidget {
 
 class BlogDetailPageState extends State<BlogDetailPage> {
   final BlogService _blogService = BlogService();
+  final ChatService _chatService = ChatService();
   
   // Helper pour obtenir l'URL du serveur selon la plateforme
   String get _serverBaseUrl {
@@ -55,11 +59,7 @@ class BlogDetailPageState extends State<BlogDetailPage> {
     
     setState(() => _isLoading = true);
     try {
-      final articles = await _blogService.getArticles(_token!);
-      final article = articles.firstWhere(
-        (a) => a['_id'] == widget.articleId,
-        orElse: () => null,
-      );
+      final article = await _blogService.getArticle(_token!, widget.articleId);
       
       if (mounted) {
         setState(() {
@@ -112,6 +112,77 @@ class BlogDetailPageState extends State<BlogDetailPage> {
             SnackBar(content: Text('Erreur: $e'), backgroundColor: Colors.red),
           );
         }
+      }
+    }
+  }
+
+  Future<void> _shareArticleToChat() async {
+    if (_article == null || _token == null) return;
+
+    try {
+      // Afficher un indicateur de chargement
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Partage en cours...')),
+      );
+
+      // Partager l'article dans le chat
+      await _chatService.shareBlogArticle(
+        articleId: _article!['_id'],
+        title: _article!['title'] ?? 'Sans titre',
+        summary: _article!['summary'] ?? '',
+        authorName: 'Utilisateur', // On pourrait récupérer le nom depuis le profil
+      );
+
+      if (mounted) {
+        // Afficher un message de succès
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Article partagé dans le chat !'),
+            backgroundColor: Colors.green,
+          ),
+        );
+
+        // Demander si l'utilisateur veut aller au chat
+        final goToChat = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Article partagé !'),
+            content: const Text('Voulez-vous aller voir le message dans le chat de groupe ?'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Rester ici'),
+              ),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(context, true),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF2E7D32),
+                  foregroundColor: Colors.white,
+                ),
+                child: const Text('Aller au chat'),
+              ),
+            ],
+          ),
+        );
+
+        if (goToChat == true) {
+          // Naviguer vers la page de chat
+          if (mounted) {
+            Navigator.push(
+              context,
+              MaterialPageRoute(builder: (context) => const GroupChatPage()),
+            );
+          }
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Erreur lors du partage: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
       }
     }
   }
@@ -339,8 +410,18 @@ class BlogDetailPageState extends State<BlogDetailPage> {
         title: Text(_article?['title'] ?? 'Article'),
         backgroundColor: const Color(0xFF2E7D32),
         foregroundColor: Colors.white,
+        leading: widget.fromChat ? IconButton(
+          icon: const Icon(Icons.arrow_back),
+          tooltip: 'Retour au chat',
+          onPressed: () => Navigator.of(context).pop(),
+        ) : null,
         actions: [
           if (_article != null) ...[
+            IconButton(
+              icon: const Icon(Icons.share),
+              tooltip: 'Partager dans le chat',
+              onPressed: _shareArticleToChat,
+            ),
             IconButton(
               icon: const Icon(Icons.edit),
               onPressed: () => Navigator.push(

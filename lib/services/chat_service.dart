@@ -81,6 +81,45 @@ class ChatService {
   // ENVOI DE MESSAGES
   // ========================================
 
+  /// Partage un article de blog dans le chat de groupe
+  Future<ChatMessage> shareBlogArticle({
+    required String articleId,
+    required String title,
+    required String summary,
+    required String authorName,
+  }) async {
+    try {
+      final headers = await _getHeaders();
+
+      // Formater le contenu du message de partage
+      final content = '📝 **Article partagé**\n\n'
+          '**$title**\n\n'
+          '${summary.isNotEmpty ? '$summary\n\n' : ''}'
+          '🔗 Voir l\'article complet';
+
+      final body = {
+        'content': content,
+        'blogArticleId': articleId,
+        'messageType': 'blog_share',
+      };
+
+      final response = await http.post(
+        Uri.parse('$baseUrl/chat/message'),
+        headers: headers,
+        body: json.encode(body),
+      );
+
+      if (response.statusCode == 201) {
+        final data = json.decode(response.body);
+        return ChatMessage.fromJson(data['message']);
+      } else {
+        throw Exception('Erreur ${response.statusCode}: ${response.body}');
+      }
+    } catch (e) {
+      throw Exception('Erreur lors du partage de l\'article: $e');
+    }
+  }
+
   /// Envoie un message texte
   Future<ChatMessage> sendTextMessage(String content, {String? replyToId}) async {
     try {

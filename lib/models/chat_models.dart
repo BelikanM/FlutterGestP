@@ -23,6 +23,7 @@ class ChatMessage {
   final List<MessageRead> readBy;
   final DateTime createdAt;
   final DateTime updatedAt;
+  final String? blogArticleId; // ID de l'article de blog si c'est un partage
 
   // Message de réponse (si applicable)
   final ChatMessage? replyToMessage;
@@ -47,6 +48,7 @@ class ChatMessage {
     required this.createdAt,
     required this.updatedAt,
     this.replyToMessage,
+    this.blogArticleId,
   });
 
   factory ChatMessage.fromJson(Map<String, dynamic> json) {
@@ -74,6 +76,7 @@ class ChatMessage {
       replyToMessage: json['replyTo'] != null && json['replyTo'] is Map
           ? ChatMessage.fromJson(json['replyTo'])
           : null,
+      blogArticleId: json['blogArticleId'],
     );
   }
 
@@ -97,6 +100,7 @@ class ChatMessage {
       'readBy': readBy.map((read) => read.toJson()).toList(),
       'createdAt': createdAt.toIso8601String(),
       'updatedAt': updatedAt.toIso8601String(),
+      'blogArticleId': blogArticleId,
     };
   }
 
@@ -107,6 +111,7 @@ class ChatMessage {
   bool get isVideoMessage => mediaType == 'video';
   bool get isAudioMessage => mediaType == 'audio';
   bool get hasReply => replyToId != null;
+  bool get isBlogShare => blogArticleId != null && blogArticleId!.isNotEmpty;
   
   String get displayContent {
     if (isDeleted) return '[Message supprimé]';
